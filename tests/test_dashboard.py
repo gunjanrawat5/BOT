@@ -97,3 +97,31 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(self.app.current['status'],'stopped')
             metadata = next((self.root/'reports'/'dashboard-runs').glob('*/run.json'))
             self.assertEqual(json.loads(metadata.read_text())['status'],'stopped')
+
+    def test_repair_launch_and_overlap_controls(self):
+        game=self.root/'game';game.mkdir();(game/'package.json').write_text('{}')
+        real_popen=subprocess.Popen
+        def dummy(command,**kwargs):
+            return real_popen([sys.executable,'-u','-c',"import time; print('INFO Repair: inspecting code (120s remaining)'); time.sleep(30)"],**kwargs)
+        with patch.dict(os.environ,{'GAME_REPO':str(game)}), patch('agent.dashboard.subprocess.Popen',side_effect=dummy) as popen:
+            self.assertEqual(self.request('POST','/api/repairs/start',{'report_id':'../escape'})[0],400)
+            code,body=self.request('POST','/api/repairs/start',{'report_id':'sample'})
+            self.assertEqual(code,201)
+            self.assertEqual(json.loads(body)['kind'],'repair')
+            self.assertIn('agent.repair',popen.call_args.args[0])
+            self.assertEqual(self.request('POST','/api/runs/start',{})[0],400)
+            self.assertEqual(self.request('POST','/api/repairs/start',{'report_id':'sample'})[0],400)
+            self.assertEqual(self.request('POST','/api/repairs/apply',{'repair_id':'anything'})[0],400)
+            self.assertEqual(self.request('POST','/api/runs/stop',{})[0],200)
+
+    def test_repair_result_is_linked_without_rewriting_report(self):
+        folder=self.root/'reports'/'repairs'/'candidate';folder.mkdir(parents=True)
+        result={'report_id':'sample','status':'checks_passed','summary':'Fixed cause','changes':[]}
+        (folder/'result.json').write_text(json.dumps(result))
+        (folder/'fix.patch').write_text('diff --git a/src/game.js b/src/game.js')
+        code,body=self.request('GET','/api/reports/sample')
+        self.assertEqual(code,200)
+        self.assertEqual(json.loads(body)['repair']['status'],'checks_passed')
+        self.assertEqual(self.request('GET','/artifacts/repairs/candidate/fix.patch')[0],200)
+        original=json.loads((self.root/'reports'/'sample'/'bug.json').read_text())
+        self.assertNotIn('repair',original)

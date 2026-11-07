@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -11,6 +12,8 @@ class DashboardBrowserTests(unittest.TestCase):
     def test_reports_run_controls_and_responsive_layout(self):
         fixture = test_dashboard.DashboardTests()
         fixture.setUp()
+        game=fixture.root/'game';game.mkdir();(game/'package.json').write_text('{}')
+        os.environ['GAME_REPO']=str(game)
         real_popen = subprocess.Popen
         def dummy(command, **kwargs):
             return real_popen([sys.executable,'-u','-c',"import time; print('INFO Step 1, run 1: Aim and shoot'); print('INFO Outcome: score +0'); time.sleep(30)"],**kwargs)
@@ -48,6 +51,26 @@ class DashboardBrowserTests(unittest.TestCase):
                         page.get_by_text('INFO Step 1, run 1: Aim and shoot',exact=True).wait_for()
                         page.get_by_role('button',name='Stop current run').click()
                         expect(page.locator('#metric-status')).to_have_text('Stopped')
+                    with patch('agent.dashboard.subprocess.Popen',side_effect=dummy):
+                        page.get_by_role('button',name='Fix bug ↗').click()
+                        expect(page.locator('#run-info')).to_contain_text('REPAIR')
+                        page.get_by_role('button',name='Stop current run').click()
+                        expect(page.locator('#metric-status')).to_have_text('Stopped')
+                    repair_folder=fixture.root/'reports'/'repairs'/'ui-candidate';repair_folder.mkdir(parents=True)
+                    repair_result={'report_id':'sample','status':'checks_passed','summary':'Targeted fix validated',
+                        'repo':str(game),'changes':[{'path':'src/game.js'}],'validation':'Regression test and build passed'}
+                    (repair_folder/'result.json').write_text(json.dumps(repair_result))
+                    (repair_folder/'fix.patch').write_text('diff --git a/src/game.js b/src/game.js')
+                    page.get_by_role('button',name='Refresh ↻').click()
+                    page.get_by_role('button',name='Apply fix to game repo').wait_for()
+                    expect(page.get_by_role('link',name='Review patch ↗')).to_be_visible()
+                    def apply_candidate(data):
+                        repair_result['status']='applied'
+                        (repair_folder/'result.json').write_text(json.dumps(repair_result))
+                        return repair_result
+                    with patch.object(fixture.app,'apply_fix',side_effect=apply_candidate):
+                        page.get_by_role('button',name='Apply fix to game repo').click()
+                        expect(page.locator('.repair-status')).to_have_text('APPLIED')
                     page.set_viewport_size({'width':390,'height':844})
                     self.assertTrue(page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
                     page.screenshot(path='/tmp/spaceqa-dashboard-mobile.png',full_page=True)

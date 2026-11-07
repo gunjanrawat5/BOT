@@ -48,6 +48,58 @@ dashboard restarts. The dashboard remains local to this computer and exposes no
 API key or editable shell commands to the browser. Press Ctrl+C in its terminal
 to stop the dashboard and its active run.
 
+## Repair agent
+
+Select a finding in the dashboard and click **Fix bug**. The repair agent uses the
+configured Gemini model to inspect the selected report, screenshots, timelines,
+and requested source files from `GAME_REPO` (default `../SpaceShooter`). Relevant
+repository contents are sent to Gemini; credentials and `.env` are not copied.
+
+The original game repo is not edited during investigation. The agent snapshots
+its current on-disk state, including uncommitted code, into
+`reports/repairs/<id>/workspace/`, then:
+
+1. Runs baseline Node tests and a Vite build.
+2. Requests source files and reasons about whether the report is a real bug.
+3. Proposes a small source change plus a new regression test.
+4. Requires the new regression test to fail against the original source.
+5. Requires the complete test suite and build to pass with the fix.
+6. Saves `fix.patch`, `result.json`, check output and the edited workspace.
+
+The agent may conclude **not a bug**, **not reproduced** (a diagnostic test passes
+on the original code), or **inconclusive**, in which case it does
+not offer a patch. It has a two-minute total time budget with no iteration limit. It can finish early
+when it reaches a conclusion or validates a patch. Request waits, retries, tests
+and builds share the remaining budget; expiration saves an inconclusive result
+and restores unvalidated edits. Each model
+request shares the configured pacing and retry behavior. It cannot modify old
+tests, dependencies or credentials and is limited to `src/` changes and new
+`tests/*.test.js` / `tests/*.test.mjs` files. No model-generated shell commands
+are executed. Generated tests are local executable code, as with normal repo
+tests; the snapshot is isolation from your working files, not an OS sandbox.
+
+A **checks passed** candidate can be reviewed in the report panel. **Review patch**
+opens the exact diff; **Repair details** includes every check and its output.
+Click **Apply fix to game repo** to copy the validated files back. Applying refuses
+if a changed original file no longer matches its snapshot or the validated repair
+file was modified. Existing unrelated changes remain untouched. The agent does
+not commit, merge, deploy or automatically mark the original report resolved.
+After applying, run the QA agent again to check the gameplay.
+
+The current repair adapter supports Node games with `"test": "node --test"` and
+`"build": "vite build"`, using the game's installed Vite executable. Automated
+browser replay of a repair candidate is not implemented; passing tests/builds
+are reported as **checks passed**, not a confirmed gameplay fix.
+
+CLI alternative:
+
+```sh
+uv run spaceqa-repair --report reports/<report-id>/bug.json --repo ../SpaceShooter
+```
+
+Use `--output <new-directory>` to choose the repair workspace. The two-minute
+repair budget also applies to CLI runs. The original report is preserved.
+
 ## Run
 
 ```sh

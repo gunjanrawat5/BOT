@@ -92,3 +92,36 @@ class BrainTests(unittest.TestCase):
         for rpm in (0, -1, True, 1.5):
             with self.assertRaises(ValueError):
                 RequestPacer(rpm)
+
+    @patch('agent.brain.time.monotonic',return_value=100)
+    def test_repair_request_timeout_uses_remaining_budget(self, clock):
+        brain=Brain.__new__(Brain)
+        brain.model='test-model';brain.pacer=Mock();brain.client=Mock()
+        brain.client.models.generate_content.return_value=Mock(text='{"frames":10,"buttons":[],"hypothesis":"Test","expected_behavior":"Normal","category":"exploration"}')
+        from agent.models import NextAction
+        brain._request(prompt='Test',schema=NextAction,images=[],context='{}',stage='Repair',deadline=110)
+        config=brain.client.models.generate_content.call_args.kwargs['config']
+        self.assertEqual(config.http_options.timeout,10000)
+
+    @patch('agent.brain.time.monotonic',return_value=100)
+    def test_expired_budget_makes_no_request(self, clock):
+        from agent.brain import DeadlineExceeded
+        from agent.models import NextAction
+        brain=Brain.__new__(Brain)
+        brain.model='test-model';brain.pacer=Mock();brain.client=Mock()
+        with self.assertRaises(DeadlineExceeded):
+            brain._request(prompt='Test',schema=NextAction,images=[],context='{}',stage='Repair',deadline=99)
+        brain.client.models.generate_content.assert_not_called()
+
+    @patch('agent.brain.time.sleep')
+    @patch('agent.brain.time.monotonic',return_value=100)
+    def test_retry_wait_cannot_exceed_deadline(self, clock, sleep):
+        from agent.brain import DeadlineExceeded
+        from agent.models import NextAction
+        brain=Brain.__new__(Brain)
+        brain.model='test-model';brain.pacer=Mock();brain.client=Mock()
+        brain.client.models.generate_content.side_effect=errors.ServerError(503,{'error':{'message':'busy'}})
+        with self.assertRaises(DeadlineExceeded):
+            brain._request(prompt='Test',schema=NextAction,images=[],context='{}',stage='Repair',deadline=101)
+        sleep.assert_not_called()
+        self.assertEqual(brain.client.models.generate_content.call_count,1)

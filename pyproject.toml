@@ -18,6 +18,7 @@ dependencies = [
 [project.scripts]
 spaceqa = "agent.main:main"
 spaceqa-dashboard = "agent.dashboard:main"
+spaceqa-repair = "agent.repair:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent"]
