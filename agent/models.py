@@ -30,6 +30,7 @@ class GameState(PublicModel):
     score: float
     enemies: list[dict]
     projectiles: list[dict]
+    enemyProjectiles: list[dict] = Field(default_factory=list)
 
 
 class Action(BaseModel):
@@ -46,7 +47,37 @@ class Action(BaseModel):
         return buttons
 
 
-class NextExperiment(Action):
+class NextAction(Action):
     hypothesis: str = Field(min_length=1, max_length=1000)
     expected_behavior: str = Field(min_length=1, max_length=1000)
     category: Literal["movement", "boundary", "shooting", "collision", "survival", "exploration"]
+
+
+class BugAssessment(BaseModel):
+    """A model judgment, never a deterministic verification result."""
+    model_config = ConfigDict(extra='forbid', strict=True)
+    issue_found: bool
+    title: str = Field(min_length=1, max_length=300)
+    severity: Literal['low', 'medium', 'high', 'critical']
+    confidence: Literal['low', 'medium', 'high']
+    expected_behavior: str = Field(min_length=1, max_length=2000)
+    actual_behavior: str = Field(min_length=1, max_length=2000)
+    evidence: list[str] = Field(min_length=1, max_length=10)
+    reasoning: str = Field(min_length=1, max_length=3000)
+    follow_up: str = Field(min_length=1, max_length=1000)
+
+
+class GameEvent(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
+    sequence: int = Field(ge=1)
+    tick: int = Field(ge=0)
+    type: str = Field(min_length=1, max_length=64)
+    data: dict
+
+
+class EventBatch(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    version: Literal[1]
+    events: list[GameEvent] = Field(max_length=4096)
+    nextSequence: int = Field(ge=0)
+    truncated: bool

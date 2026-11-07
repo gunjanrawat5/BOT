@@ -3,14 +3,14 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 from agent.memory import ExplorationMemory
-from agent.models import NextExperiment
+from agent.models import NextAction
 from agent.brain import Brain
 from agent.main import explore
-from test_agent import state, FakeGame
+from test_agent import state, FakeGame, assessment
 
 
 def plan(buttons=None, category='boundary'):
-    return NextExperiment(frames=60, buttons=buttons or ['right'], hypothesis='Test interaction',
+    return NextAction(frames=60, buttons=buttons or ['right'], hypothesis='Test interaction',
                           expected_behavior='Observe normal behavior', category=category)
 
 
@@ -66,12 +66,14 @@ class MemoryTests(unittest.TestCase):
                 self.state['status'] = after['status'] = 'game_over'
                 return after
         brain = Mock()
+        brain.model = 'test-model'
+        brain.assess.return_value = assessment()
         brain.choose_next.return_value = plan(['shoot'], 'shooting')
         with tempfile.TemporaryDirectory() as root:
             result = explore(EndingGame(False), brain, seed=42, max_steps=3, game_url='game', reports=root)
-            self.assertEqual(result['memory']['experiments'], 3)
+            self.assertEqual(result['memory']['actions'], 3)
             self.assertEqual(result['memory']['game_overs'], 3)
             with open(result['session']) as f:
-                records = [json.loads(line) for line in f]
+                records = [record for line in f if (record := json.loads(line))['event'] == 'action']
             self.assertEqual([r['outcome']['run'] for r in records], [1, 2, 3])
             self.assertEqual(records[-1]['memory']['shooting_batches'], 3)

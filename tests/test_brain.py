@@ -6,12 +6,12 @@ from google.genai import errors
 
 class BrainTests(unittest.TestCase):
     def test_wire_schema_omits_unsupported_field_but_local_validation_stays_strict(self):
-        from agent.models import NextExperiment
+        from agent.models import NextAction
         from pydantic import ValidationError
         self.assertNotIn('additionalProperties', response_schema())
-        self.assertEqual(NextExperiment.model_config['extra'], 'forbid')
+        self.assertEqual(NextAction.model_config['extra'], 'forbid')
         with self.assertRaises(ValidationError):
-            NextExperiment.model_validate_json('{"frames":1,"buttons":[],"hypothesis":"Test","expected_behavior":"Normal","category":"boundary","code":"unsafe"}')
+            NextAction.model_validate_json('{"frames":1,"buttons":[],"hypothesis":"Test","expected_behavior":"Normal","category":"boundary","code":"unsafe"}')
 
     def test_invalid_response_retries_once(self):
         brain = Brain.__new__(Brain)

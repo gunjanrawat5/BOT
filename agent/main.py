@@ -10,9 +10,8 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from .memory import ExplorationMemory
 from .controller import GameController
-from .detector import check, check_reset
-from .replay import verify
-from .reports import write_report
+from .detector import check_reset
+from .reports import write_ai_report
 
 
 def explore(controller, brain, *, seed, max_steps, game_url, reports):
@@ -24,38 +23,47 @@ def explore(controller, brain, *, seed, max_steps, game_url, reports):
     run = 1
     state = controller.reset(seed)
     for step in range(max_steps):
-        violations = check_reset(state) if not trace else []
+        if state['status'] == 'game_over':
+            run += 1
+            trace = []
+            state = controller.reset(seed)
         before = state
-        if not violations:
-            if state['status'] == 'game_over':
-                run += 1
-                trace = []
-                state = controller.reset(seed)
-                before = state
-                violations = check_reset(state)
-            if not violations:
-                plan = brain.choose_next(controller.screenshot(), state, history[-5:], coverage, memory=memory)
-                logging.info('Step %d, run %d: %s (%s, %d frames)', step + 1, run, plan.hypothesis, plan.buttons, plan.frames)
-                action = {'frames': plan.frames, 'buttons': plan.buttons}
-                state = controller.step(**action)
-                trace.append({'action': action, 'frame_by_frame': getattr(controller, 'watch', False), 'plan': plan.model_dump(), 'before': before, 'after': state})
-                outcome = memory.record(before, state, plan, run)
-                history.append(outcome)
-                with session.open('a', encoding='utf-8') as log:
-                    log.write(json.dumps({'step': step + 1, 'outcome': outcome, 'memory': memory.summary()}) + '\n')
-                logging.info('Outcome: x %g → %g; score %+g; health %+g; enemies %d → %d; status %s',
-                             before['player']['x'], state['player']['x'], outcome['score_delta'],
-                             outcome['health_delta'], len(before['enemies']), len(state['enemies']), state['status'])
-                coverage.add(plan.category)
-                violations = check(before, state)
-        if violations:
-            evidence = controller.screenshot()
-            verification = verify(controller, seed, trace, violations)
-            folder = write_report(reports, seed=seed, game_url=game_url, trace=trace,
-                violations=violations, before=before, after=state, screenshot=evidence, verification=verification)
-            logging.info('Issue %s; report: %s', 'verified' if verification['verified'] else 'unverified', folder)
-            return {'report': str(folder), 'verification': verification}
-    logging.info('Finished %d experiments; categories: %s. No checked invariant violated.', max_steps, sorted(coverage))
+        before_image = controller.screenshot()
+        plan = brain.choose_next(before_image, state, history[-5:], coverage, memory=memory)
+        logging.info('Step %d, run %d: %s (%s, %d frames)', step + 1, run, plan.hypothesis, plan.buttons, plan.frames)
+        action = {'frames': plan.frames, 'buttons': plan.buttons}
+        state = controller.step(**action)
+        after_image = controller.screenshot()
+        timeline = getattr(controller, 'last_events', None) or {'available': False, 'complete': False, 'events': [], 'reason': 'No event API available'}
+        trace.append({'action': action, 'frame_by_frame': getattr(controller, 'watch', False),
+                      'plan': plan.model_dump(), 'before': before, 'after': state, 'timeline': timeline})
+        outcome = memory.record(before, state, plan, run)
+        outcome['timeline'] = timeline
+        history.append(outcome)
+        # Persist the completed action before the assessment request can fail.
+        with session.open('a', encoding='utf-8') as log:
+            log.write(json.dumps({'event': 'action', 'step': step + 1, 'outcome': outcome, 'memory': memory.summary()}) + '\n')
+        logging.info('Outcome: x %g → %g; score %+g; health %+g; enemies %d → %d; status %s',
+                     before['player']['x'], state['player']['x'], outcome['score_delta'],
+                     outcome['health_delta'], len(before['enemies']), len(state['enemies']), state['status'])
+        logging.info('Action events: %d; evidence %s', len(timeline['events']), 'complete' if timeline['complete'] else 'incomplete or unavailable')
+        assessment = brain.assess(before_screenshot=before_image, after_screenshot=after_image,
+                                  before=before, after=state, plan=plan,
+                                  recent_history=history[-5:], memory=memory, timeline=timeline)
+        outcome['assessment'] = assessment.model_dump()
+        coverage.add(plan.category)
+        with session.open('a', encoding='utf-8') as log:
+            log.write(json.dumps({'event': 'assessment', 'step': step + 1, 'assessment': assessment.model_dump()}) + '\n')
+        logging.info('Gemini review: %s (%s confidence). %s',
+                     'suspected bug' if assessment.issue_found else 'no issue flagged',
+                     assessment.confidence, assessment.reasoning)
+        if assessment.issue_found:
+            folder = write_ai_report(reports, seed=seed, game_url=game_url, trace=trace,
+                before=before, after=state, before_screenshot=before_image, screenshot=after_image,
+                assessment=assessment, model=brain.model)
+            logging.info('AI suspected bug report: %s (not independently verified)', folder)
+            return {'report': str(folder), 'assessment': assessment.model_dump(), 'session': str(session)}
+    logging.info('Finished %d actions; categories: %s. Gemini flagged no suspected bugs.', max_steps, sorted(coverage))
     return {'steps': max_steps, 'coverage': sorted(coverage), 'memory': memory.summary(), 'session': str(session)}
 
 

@@ -55,7 +55,7 @@ class ExplorationMemory:
         goals.append('Survive longer: observe approaching enemies/projectiles and adapt direction and action duration.')
         if not self.damage_events:
             goals.append('Observe a controlled collision/health interaction after establishing movement and shooting.')
-        return {'experiments': self.steps, 'category_counts': dict(self.categories),
+        return {'actions': self.steps, 'category_counts': dict(self.categories),
                 'edges_already_reached': sorted(self.edges), 'best_score': self.best_score,
                 'longest_run_ticks': self.longest_run_ticks, 'game_overs': self.deaths,
                 'score_increase_events': self.score_gains, 'health_loss_events': self.damage_events,
@@ -71,5 +71,5 @@ class ExplorationMemory:
         if buttons == {'right'} and p['x'] + p['width'] >= state['canvas']['width'] - 1e-6 and 'right' in self.edges:
             return 'Right edge already reached; holding right here repeats a settled boundary observation.'
         if plan.category == 'boundary' and len(self.recent) >= 2 and all(r['plan']['category'] == 'boundary' for r in self.recent[-2:]):
-            return 'Two consecutive boundary experiments already ran. Choose a gameplay interaction in another category.'
+            return 'Two consecutive boundary actions already ran. Choose a gameplay interaction in another category.'
         return None
