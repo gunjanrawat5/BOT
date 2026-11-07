@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import signal
@@ -47,7 +48,7 @@ class Dashboard:
 
     def artifact(self, relative):
         path = (self.reports / relative).resolve()
-        if not path.is_relative_to(self.reports.resolve()) or path.suffix not in {'.png', '.json', '.md', '.patch'} or not path.is_file():
+        if not path.is_relative_to(self.reports.resolve()) or path.suffix not in {'.png', '.json', '.md', '.patch', '.webm'} or not path.is_file():
             raise FileNotFoundError('Artifact not found')
         return path
 
@@ -206,6 +207,52 @@ def make_handler(app):
             self.end_headers()
             self.wfile.write(body)
 
+        def send_video(self, path):
+            size = path.stat().st_size
+            start, end, partial = 0, size - 1, False
+            requested = self.headers.get('Range')
+            if requested:
+                match = re.fullmatch(r'bytes=(\d*)-(\d*)', requested)
+                try:
+                    if not match or not any(match.groups()) or size == 0:
+                        raise ValueError()
+                    first, last = match.groups()
+                    if first:
+                        start = int(first)
+                        end = min(int(last), size - 1) if last else size - 1
+                    else:
+                        length = int(last)
+                        if length < 1: raise ValueError()
+                        start, end = max(0, size - length), size - 1
+                    if start >= size or start > end: raise ValueError()
+                    partial = True
+                except ValueError:
+                    self.send_response(416)
+                    self.send_header('Content-Range', f'bytes */{size}')
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+            self.send_response(206 if partial else 200)
+            self.send_header('Content-Type', 'video/webm')
+            self.send_header('Accept-Ranges', 'bytes')
+            self.send_header('Content-Length', str(max(0, end - start + 1)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            if partial:
+                self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+            self.end_headers()
+            try:
+                with path.open('rb') as video:
+                    video.seek(start)
+                    remaining = end - start + 1
+                    while remaining > 0:
+                        chunk = video.read(min(65536, remaining))
+                        if not chunk: break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
         def valid_host(self):
             return self.headers.get('Host') in {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}
 
@@ -233,6 +280,8 @@ def make_handler(app):
                     return self.send(200, report)
                 if path.startswith('/artifacts/'):
                     artifact = app.artifact(path.removeprefix('/artifacts/'))
+                    if artifact.suffix == '.webm':
+                        return self.send_video(artifact)
                     return self.send(200, artifact.read_bytes(), {'.png': 'image/png', '.md': 'text/plain; charset=utf-8', '.patch': 'text/plain; charset=utf-8', '.json': 'application/json'}[artifact.suffix])
                 return self.send(404, {'error': 'Not found'})
             except (FileNotFoundError, ValueError, OSError):

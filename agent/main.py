@@ -3,6 +3,7 @@ import argparse
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from uuid import uuid4
 from pathlib import Path
@@ -12,6 +13,7 @@ from .memory import ExplorationMemory
 from .controller import GameController
 from .detector import check_reset
 from .reports import write_ai_report
+from .video import RunRecording
 
 
 def explore(controller, brain, *, seed, max_steps, game_url, reports):
@@ -32,11 +34,17 @@ def explore(controller, brain, *, seed, max_steps, game_url, reports):
         plan = brain.choose_next(before_image, state, history[-5:], coverage, memory=memory)
         logging.info('Step %d, run %d: %s (%s, %d frames)', step + 1, run, plan.hypothesis, plan.buttons, plan.frames)
         action = {'frames': plan.frames, 'buttons': plan.buttons}
+        recording_started = getattr(controller, 'recording_started', None)
+        action_started = time.monotonic()
         state = controller.step(**action)
+        action_ended = time.monotonic()
         after_image = controller.screenshot()
         timeline = getattr(controller, 'last_events', None) or {'available': False, 'complete': False, 'events': [], 'reason': 'No event API available'}
         trace.append({'action': action, 'frame_by_frame': getattr(controller, 'watch', False),
                       'plan': plan.model_dump(), 'before': before, 'after': state, 'timeline': timeline})
+        if recording_started is not None:
+            trace[-1]['recording_seconds'] = {'start': round(action_started-recording_started, 3),
+                                               'end': round(action_ended-recording_started, 3)}
         outcome = memory.record(before, state, plan, run)
         outcome['timeline'] = timeline
         history.append(outcome)
@@ -60,7 +68,7 @@ def explore(controller, brain, *, seed, max_steps, game_url, reports):
         if assessment.issue_found:
             folder = write_ai_report(reports, seed=seed, game_url=game_url, trace=trace,
                 before=before, after=state, before_screenshot=before_image, screenshot=after_image,
-                assessment=assessment, model=brain.model)
+                assessment=assessment, model=brain.model, video_pending=recording_started is not None)
             logging.info('AI suspected bug report: %s (not independently verified)', folder)
             return {'report': str(folder), 'assessment': assessment.model_dump(), 'session': str(session)}
     logging.info('Finished %d actions; categories: %s. Gemini flagged no suspected bugs.', max_steps, sorted(coverage))
@@ -92,6 +100,7 @@ def main():
     parser.add_argument('--control-check', action='store_true', help='Check browser integration without calling Gemini')
     parser.add_argument('--headless', action='store_true')
     parser.add_argument('--watch', action='store_true', help='Animate actual game frames at about 60 FPS')
+    parser.add_argument('--no-video', action='store_true', help='Disable original gameplay recording')
     parser.add_argument('--keep-open', action='store_true', help='Wait for Enter before closing the browser')
     parser.add_argument('--reports', default='reports')
     args = parser.parse_args()
@@ -113,20 +122,29 @@ def main():
             brain = Brain(key, model, rpm=int(os.getenv('GEMINI_RPM', '15')))
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=args.headless)
+            recording = None
             try:
-                controller = GameController(browser.new_page(), watch=args.watch)
+                recording = RunRecording(browser, enabled=not args.no_video and not args.control_check)
+                controller = GameController(recording.page, watch=args.watch or recording.enabled)
+                if recording.enabled:
+                    controller.recording_started = recording.started
                 controller.connect(url)
                 if args.control_check:
                     control_check(controller, seed, args.reports)
                 else:
-                    explore(controller, brain, seed=seed, max_steps=steps, game_url=url, reports=args.reports)
+                    result = explore(controller, brain, seed=seed, max_steps=steps, game_url=url, reports=args.reports)
+                    recording.report_folder = result.get('report')
             finally:
                 if args.keep_open:
                     try:
                         input('Browser stays open. Press Enter here to close it... ')
                     except (EOFError, KeyboardInterrupt):
                         pass
-                browser.close()
+                try:
+                    if recording is not None:
+                        recording.close()
+                finally:
+                    browser.close()
     except Exception as exc:
         # Do not log SDK request details or credentials.
         if isinstance(exc, ValueError) or type(exc).__name__ == 'PlanningError':

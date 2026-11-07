@@ -125,3 +125,17 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.request('GET','/artifacts/repairs/candidate/fix.patch')[0],200)
         original=json.loads((self.root/'reports'/'sample'/'bug.json').read_text())
         self.assertNotIn('repair',original)
+
+    def test_video_route_supports_seek_ranges(self):
+        payload=bytes(range(100))
+        (self.root/'reports'/'sample'/'evidence.webm').write_bytes(payload)
+        for value,expected,code in [('bytes=10-19',payload[10:20],206),('bytes=-8',payload[-8:],206),('bytes=95-',payload[95:],206),('bytes=100-',b'',416)]:
+            connection=http.client.HTTPConnection('127.0.0.1',self.server.server_port)
+            connection.request('GET','/artifacts/sample/evidence.webm',headers={'Range':value})
+            response=connection.getresponse()
+            self.assertEqual(response.status,code)
+            if code==206:
+                self.assertEqual(response.getheader('Content-Type'),'video/webm')
+                self.assertEqual(response.getheader('Accept-Ranges'),'bytes')
+            self.assertEqual(response.read(),expected)
+            connection.close()

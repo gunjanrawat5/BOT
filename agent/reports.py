@@ -31,7 +31,7 @@ def write_report(root, *, seed, game_url, trace, violations, before, after, scre
 
 
 def write_ai_report(root, *, seed, game_url, trace, before, after,
-                    before_screenshot, screenshot, assessment, model):
+                    before_screenshot, screenshot, assessment, model, video_pending=False):
     """Save every model-flagged issue, including uncertain design assumptions."""
     bug_id = uuid4().hex[:8]
     folder = Path(root) / f'{datetime.now(timezone.utc):%Y%m%dT%H%M%S_%fZ}_{bug_id}'
@@ -49,6 +49,8 @@ def write_ai_report(root, *, seed, game_url, trace, before, after,
               'verification': {'verified': False, 'attempts': 0, 'reason': 'AI judgment; no independent verification or replay performed.'},
               'event_timeline': 'events.json',
               'evidence': {'before': 'before.png', 'after': 'evidence.png'}}
+    if video_pending:
+        report['video'] = {'file': 'evidence.webm', 'status': 'pending', 'kind': 'original_gameplay_recording'}
     (folder / 'events.json').write_text(json.dumps({'actions': [{'index': i + 1, 'timeline': record.get('timeline', {'available': False, 'complete': False, 'events': []})} for i, record in enumerate(trace)]}, indent=2), encoding='utf-8')
     (folder / 'before.png').write_bytes(before_screenshot)
     (folder / 'evidence.png').write_bytes(screenshot)

@@ -107,8 +107,8 @@ uv run spaceqa --watch --keep-open
 ```
 
 The game advances visibly frame by frame, pauses while Gemini reasons, and stays
-open at the end until Enter is pressed in the terminal. Omit `--watch` for fast
-batched stepping; use `--headless` for background runs. Equivalent module command:
+open at the end until Enter is pressed in the terminal. Use `--headless` for background runs. Video capture uses animated frame stepping
+even headlessly; use `--no-video` without `--watch` for fast batched stepping. Equivalent module command:
 `uv run python -m agent.main`.
 
 `MAX_AGENT_STEPS` defaults to 20. Each action normally uses **two model
@@ -148,7 +148,8 @@ Every model-flagged issue creates `reports/<UTC timestamp>_<id>/` containing:
 
 - `bug.md`: expected/actual behavior, evidence, reasoning and follow-up.
 - `bug.json`: full assessment, public states and per-run action trace.
-- `before.png` and `evidence.png`: before/after screenshots.
+- `evidence.webm`: original recorded gameplay, shown in the dashboard player.
+- `before.png` and `evidence.png`: before/after screenshots (collapsed when a video is available).
 - `replay_trace.json`: seed and exact original API calls.
 - `events.json`: per-action event timelines and completeness metadata.
 
@@ -163,6 +164,29 @@ Completed actions are appended before assessment to
 A provider failure does not erase earlier records. Logs include runs with no bugs.
 Memory is retained across game resets, not across separate CLI launches. All
 reports and `.env` are ignored by Git.
+
+## Gameplay video
+
+New QA runs record the browser viewport by default. When Gemini flags a suspected
+bug, the original recording is finalized as `evidence.webm` in that report folder.
+The dashboard provides play/pause, seeking, an **Open video** link, and a
+**Jump to flagged action** button using approximate wall-clock action timestamps.
+Before/after screenshots remain available in a collapsed section and continue to
+be used by Gemini. Video bytes are not uploaded to Gemini.
+
+This is the original captured session, including model-thinking pauses and any
+game resets, not a separately reproduced or independently verified bug. The saved
+action trace still contains only the active game run. Recording requires frame
+stepping so movement is visible in the footage; headless runs also advance frames
+visibly to the recorder. WebM playback is served locally with byte-range support
+for seeking. Older reports without a video retain their screenshot viewer.
+
+Use `--no-video` to disable recording. Control-check runs do not record video.
+Temporary footage is discarded for runs without a suspected bug. With
+`--keep-open`, press Enter in the terminal to close the recording context and
+finalize the clip; until then the report displays a pending-video message.
+Dashboard runs close automatically and finalize the recording before completing.
+Video recording follows the [Playwright video API](https://playwright.dev/python/docs/videos).
 
 ## Game contract
 

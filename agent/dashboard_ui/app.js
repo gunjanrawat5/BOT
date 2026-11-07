@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="spaceqa-token"]').content;
-let activeRun = false, repairReady = false;
+let activeRun = false, repairReady = false, currentRun = null, launching = false, pendingRepairId = null;
 let initialized = false, reports = [], selected = null, reportSignature = '', logSignature = '', polling = false;
 const el = (tag, cls, value) => { const node = document.createElement(tag); if (cls) node.className = cls; if (value !== undefined) node.textContent = value; return node; };
 async function api(path, data) {
@@ -9,9 +9,18 @@ async function api(path, data) {
   if (!response.ok) throw new Error(result.error || 'Request failed');
   return result;
 }
+function syncActivityMotion() {
+  const working = currentRun?.status === 'running';
+  const flying = launching || (working && currentRun.kind !== 'repair');
+  $('launch-flight').hidden = !flying;
+  const hammer = $('repair-motion');
+  if (hammer) hammer.hidden = !(pendingRepairId === selected || (working && currentRun.kind === 'repair' && currentRun.report_id === selected));
+}
 function duration(seconds) { const s = Math.max(0,Math.floor(seconds)); return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; }
 function showStatus(data) {
   const {run, settings, logs} = data;
+  currentRun = run;
+  syncActivityMotion();
   if (!initialized) {
     $('game-url').value = settings.game_url; $('max-steps').value = settings.max_steps; $('seed').value = settings.seed;
     initialized = true;
@@ -83,11 +92,14 @@ async function loadReport(id) {
     const fixButton=el('button','repair-button','Fix bug ↗');fixButton.id='fix-bug';fixButton.type='button';fixButton.disabled=activeRun||!repairReady;
     const repairError=el('p','form-error');repairError.setAttribute('role','alert');
     fixButton.addEventListener('click',async()=>{
-      fixButton.disabled=true;repairError.textContent='';
-      try {await api('/api/repairs/start',{report_id:id});await refresh();$('terminal').scrollIntoView({behavior:'smooth',block:'center'});}
+      fixButton.disabled=true;repairError.textContent='';$('form-error').textContent='';pendingRepairId=id;syncActivityMotion();
+      try {currentRun=await api('/api/repairs/start',{report_id:id});await refresh();}
       catch(error){repairError.textContent=error.message;fixButton.disabled=activeRun||!repairReady;}
+      finally{pendingRepairId=null;syncActivityMotion();}
     });
     repairHeading.append(fixButton);repairBox.append(repairHeading);
+    const repairMotion=el('div','repair-motion');repairMotion.id='repair-motion';repairMotion.hidden=true;repairMotion.setAttribute('aria-hidden','true');
+    repairMotion.append($('repair-animation-template').content.cloneNode(true));repairBox.append(repairMotion);
     const repair=report.repair;
     if(repair){
       repairBox.append(el('div','repair-status',repair.status.replaceAll('_',' ').toUpperCase()),el('p','detail-copy',repair.summary||'Investigating the report…'));
@@ -113,7 +125,7 @@ async function loadReport(id) {
         });repairBox.append(apply);
       }
     }
-    repairBox.append(repairError);target.append(repairBox);
+    repairBox.append(repairError);target.append(repairBox);syncActivityMotion();
     const grid=el('div','evidence-grid');
     const evidence=report.evidence;
     const images=typeof evidence==='object'&&evidence!==null ? [['BEFORE',evidence.before],['AFTER',evidence.after]] : [['FAILURE CAPTURE',evidence||'evidence.png']];
@@ -122,7 +134,53 @@ async function loadReport(id) {
       const fig=el('figure'), link=el('a'); link.href='/artifacts/'+encodeURIComponent(id)+'/'+encodeURIComponent(file);link.target='_blank';link.rel='noopener';
       const img=el('img');img.src=link.href;img.alt=label+' gameplay screenshot';img.loading='lazy';link.append(img);fig.append(el('figcaption','',label),link);grid.append(fig);
     }
-    target.append(grid);
+    if (report.video?.status === 'ready' && report.video.file) {
+      const playback=el('section','video-evidence');
+      playback.append(el('h4','','Gameplay recording'));
+      const video=el('video');video.controls=true;video.playsInline=true;video.preload='metadata';
+      video.setAttribute('aria-label','Original gameplay leading to the suspected bug');
+      const toolbar=el('div','video-toolbar');
+      const length=el('span','video-duration','Loading recording…');length.setAttribute('role','status');
+      const play=el('button','video-play','▶ Play recording');play.type='button';
+      const playbackError=el('p','form-error video-error');playbackError.setAttribute('role','alert');
+      const showDuration=()=>{length.textContent=Number.isFinite(video.duration)&&video.duration>0 ? `${video.duration.toFixed(1)}s recording` : 'Recording ready · duration unavailable';};
+      video.addEventListener('loadedmetadata',showDuration);video.addEventListener('durationchange',showDuration);
+      const showState=()=>{play.textContent=video.ended?'↻ Replay':video.paused?'▶ Play recording':'Ⅱ Pause';};
+      for(const event of ['play','pause','ended'])video.addEventListener(event,showState);
+      video.addEventListener('error',async()=>{
+        length.textContent='Playback unavailable';play.disabled=true;
+        playbackError.textContent='This browser could not play the recording. Use Open video below to open or download the original file.';
+        try{
+          const response=await fetch(video.src,{headers:{Range:'bytes=0-0'}});
+          await response.body?.cancel();
+          if(!video.isConnected)return;
+          if(response.status===404)playbackError.textContent='The dashboard server returned HTTP 404 for the video. Restart it with uv run spaceqa-dashboard, then refresh this page.';
+          else if(!response.ok)playbackError.textContent=`The video request failed (HTTP ${response.status}). Restart the dashboard and try again.`;
+        }catch(error){if(video.isConnected)playbackError.textContent='The video server could not be reached. Start the dashboard again and refresh this page.';}
+      });
+      play.addEventListener('click',async()=>{
+        playbackError.textContent='';
+        if(!video.paused){video.pause();return;}
+        if(video.ended)video.currentTime=0;
+        try{await video.play();}
+        catch(error){if(video.isConnected)playbackError.textContent='Playback could not start. Try Open video below to open or download the recording.';}
+      });
+      toolbar.append(length,play);
+      video.src='/artifacts/'+encodeURIComponent(id)+'/'+encodeURIComponent(report.video.file);
+      video.poster='/artifacts/'+encodeURIComponent(id)+'/evidence.png';
+      playback.append(toolbar,video,playbackError);
+      const timed=(report.trace||[]).filter(record=>record.recording_seconds);
+      if(timed.length){
+        const jump=el('button','text-button jump-to-action','Jump to flagged action ↗');jump.type='button';
+        jump.addEventListener('click',()=>{const seek=()=>{video.currentTime=Math.max(0,Math.min(video.duration||Infinity,timed.at(-1).recording_seconds.start-1));video.play().catch(()=>{});};if(video.readyState>=1)seek();else{video.addEventListener('loadedmetadata',seek,{once:true});video.load();}});
+        playback.append(jump);
+      }
+      target.append(playback);
+      const snapshots=el('details','screenshot-details');snapshots.append(el('summary','','Before / after snapshots'),grid);target.append(snapshots);
+    } else {
+      if(report.video?.status==='pending')section(target,'Gameplay recording','Video is being finalized. With --keep-open, press Enter in the agent terminal to finish recording.');
+      target.append(grid);
+    }
     section(target,'Expected behavior',report.expected_behavior||assessment.expected_behavior);
     section(target,'Actual behavior',report.actual_behavior||assessment.actual_behavior);
     section(target,'Observations',assessment.evidence?.map(item=>'• '+item).join('\n'));
@@ -131,6 +189,7 @@ async function loadReport(id) {
     if (report.verification) section(target,'Verification',report.verification.reason || `Replay attempts: ${report.verification.attempts}; verified: ${report.verification.verified}`);
     const links=el('div','downloads');
     for(const [title,file] of [['Open Markdown ↗','bug.md'],['Report JSON ↗','bug.json'],['Replay trace ↗','replay_trace.json']]){const a=el('a','',title);a.href='/artifacts/'+encodeURIComponent(id)+'/'+file;a.target='_blank';a.rel='noopener';links.append(a);}
+    if (report.video?.status==='ready' && report.video.file) {const a=el('a','','Open video ↗');a.href='/artifacts/'+encodeURIComponent(id)+'/'+encodeURIComponent(report.video.file);a.target='_blank';a.rel='noopener';links.append(a);}
     if (report.event_timeline) { const a=el('a','','Event timeline ↗'); a.href='/artifacts/'+encodeURIComponent(id)+'/'+encodeURIComponent(report.event_timeline); a.target='_blank'; a.rel='noopener'; links.append(a); }
     target.append(links,el('h4','','Action sequence'),el('pre','trace',JSON.stringify((report.trace||[]).map(item=>item.action),null,2)));
   } catch(error){if(selected===id)target.replaceChildren(el('p','form-error',error.message));}
@@ -144,9 +203,10 @@ async function refresh() {
   finally{polling=false;}
 }
 $('run-form').addEventListener('submit',async event=>{
-  event.preventDefault();$('form-error').textContent='';$('start').disabled=true;
-  try {await api('/api/runs/start',{game_url:$('game-url').value,max_steps:Number($('max-steps').value),seed:Number($('seed').value),watch:$('watch').checked}); await refresh();}
+  event.preventDefault();$('form-error').textContent='';$('start').disabled=true;launching=true;syncActivityMotion();
+  try {currentRun=await api('/api/runs/start',{game_url:$('game-url').value,max_steps:Number($('max-steps').value),seed:Number($('seed').value),watch:$('watch').checked}); await refresh();}
   catch(error){$('form-error').textContent=error.message;$('start').disabled=false;}
+  finally{launching=false;syncActivityMotion();}
 });
 $('stop').addEventListener('click',async()=>{try{await api('/api/runs/stop',{});await refresh();}catch(error){$('form-error').textContent=error.message;}});
 $('refresh').addEventListener('click',refresh);
