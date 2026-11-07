@@ -19,7 +19,7 @@ def write_report(root, *, seed, game_url, trace, violations, before, after, scre
               'evidence': 'evidence.png'}
     (folder / 'evidence.png').write_bytes(screenshot)
     (folder / 'bug.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
-    (folder / 'replay_trace.json').write_text(json.dumps({'seed': seed, 'actions': [r['action'] for r in trace]}, indent=2), encoding='utf-8')
+    (folder / 'replay_trace.json').write_text(json.dumps({'seed': seed, 'actions': [action for r in trace for action in ([{'frames': 1, 'buttons': r['action']['buttons']}] * r['action']['frames'] if r.get('frame_by_frame') else [r['action']])]}, indent=2), encoding='utf-8')
     (folder / 'bug.md').write_text(f'# {report["title"]}\n\nStatus: **{status}**\n\n'
         f'Bug ID: {bug_id}\n\nSuspected severity: medium\n\nGame: {game_url}\n\nSeed: {seed}\n\n'
         f'Expected: {report["expected_behavior"]}\n\nActual: {report["actual_behavior"]}\n\n'

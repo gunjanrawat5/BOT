@@ -36,5 +36,10 @@ class BrowserTests(unittest.TestCase):
                 self.assertTrue(controller.screenshot().startswith(b'\x89PNG'))
                 controller.reset(42)
                 self.assertEqual(controller.step(120, ['right']), after)
+                watching = GameController(page, watch=True)
+                watching.reset(42)
+                self.assertEqual(watching.step(12, ['right']), dict(after, tick=12, player=dict(after['player'], x=52)))
+                watching.reset(42)
+                self.assertEqual(watching.step(12, ['right'])['player']['x'], 52)
             finally:
                 browser.close()

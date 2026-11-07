@@ -69,11 +69,15 @@ class AgentTests(unittest.TestCase):
         brain = Mock()
         brain.choose_next.return_value = NextExperiment(frames=100, buttons=['right'], hypothesis='Test boundary', expected_behavior='Stop at edge', category='boundary')
         with tempfile.TemporaryDirectory() as root:
-            result = explore(FakeGame(), brain, seed=42, max_steps=2, game_url='http://game', reports=root)
+            game = FakeGame()
+            game.watch = True
+            result = explore(game, brain, seed=42, max_steps=2, game_url='http://game', reports=root)
             report = json.loads((Path(result['report']) / 'bug.json').read_text())
             self.assertEqual(report['status'], 'verified')
             self.assertEqual(report['after']['player']['x'], 140)
             self.assertEqual(len(report['trace']), 1)
+            exported = json.loads((Path(result['report']) / 'replay_trace.json').read_text())
+            self.assertEqual(exported['actions'], [{'frames': 1, 'buttons': ['right']}] * 100)
             self.assertEqual((Path(result['report']) / 'evidence.png').read_bytes(), b'evidence')
 
     def test_control_check(self):

@@ -36,7 +36,7 @@ The game must expose exactly these methods:
 - `window.gameTestAPI.stepFrames(frames, buttons)`
 
 Test mode must pause the normal loop. Reset must preserve test mode and seed
-reproducibility. Frame batches accept integers from 1–180 and buttons `left`,
+reproducibility. Frame batches accept integers from 1–180 and unique held buttons `left`,
 `right`, `shoot`. Reset/step return values are not required; the controller reads
 state separately. The page needs a visible canvas.
 
@@ -49,18 +49,45 @@ telemetry. See `agent/models.py` for validation.
 ## Run the agent
 
 Set `GEMINI_API_KEY` and an available vision-capable `GEMINI_MODEL` in `.env`.
-No model ID is hardcoded. Then:
+No model ID is hardcoded. `GEMINI_RPM=15` spaces all request starts (including
+retries) by at least 4.25 seconds. Adjust it to your actual model quota. This
+pacing applies within one agent process; other processes sharing the same Google
+project and recent runs can still consume the quota. Then:
 
 ```sh
 uv run spaceqa
+# Watch smooth frame-by-frame gameplay and keep the final browser open:
+uv run spaceqa --watch --keep-open
 # Optional background browser:
 uv run spaceqa --headless
 ```
 
 Equivalent: `uv run python -m agent.main`. `MAX_AGENT_STEPS` defaults to 20.
-The browser is visible by default. Each decision gets a PNG screenshot, public
-state, the last five experiments, and category coverage. Invalid output/provider
+The browser is visible by default. `--watch` advances through the same public
+API one frame at a time, yielding about 1/60 second between updates so movement
+is visible. The game pauses while Gemini thinks. Replays use the same stepping
+mode, and exported watch-mode replay traces contain the exact single-frame calls.
+Use `--control-check --watch` to check deterministic replay in this mode.
+`--keep-open` waits for Enter in the terminal before closing, including on errors. Each decision gets a PNG screenshot, public
+state, the last five experiments with measured deltas, category counts and
+cumulative exploration memory. It is asked to aim at enemies, shoot, dodge and
+survive while investigating mechanics. Memory tracks score increases, health loss,
+game overs, survival ticks, movement-plus-shooting and edges already reached;
+these observations guide open gameplay goals rather than scripting actions.
+Already-observed outward edge holds and more than two consecutive boundary tests
+are rejected and replanned once. If replanning still fails, the run stops safely.
+Memory persists across game resets within a CLI session, not across CLI launches.
+Completed experiment outcomes and memory summaries are appended to
+`reports/sessions/<UTC timestamp>_<id>.jsonl`, including runs without detected bugs.
+These logs survive a later planning failure; they are activity records, not verified
+bug reports. Gameplay goals do not add new correctness rules: the detector still
+only verifies the declared invariants listed below. Invalid output/provider
 errors are retried once, then stop the run without executing an invalid action.
+Rate-limit errors (429) wait 30 seconds before one final retry; other
+service errors wait two seconds before retrying; permanent request errors stop
+immediately. Each request has a 60-second timeout. If one model repeatedly returns
+503/504, try another accessible vision model; `gemini-3.1-flash-lite` has passed
+a live screenshot-and-schema check for this project.
 No Gemini tools or code execution are enabled. The SDK integration follows the
 [Google Gen AI SDK documentation](https://googleapis.github.io/python-genai/).
 

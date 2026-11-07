@@ -1,6 +1,6 @@
 """Validated public telemetry and constrained model decisions."""
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class PublicModel(BaseModel):
@@ -36,6 +36,14 @@ class Action(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     frames: int = Field(ge=1, le=180)
     buttons: list[Literal["left", "right", "shoot"]] = Field(default_factory=list, max_length=3)
+
+
+    @field_validator('buttons')
+    @classmethod
+    def unique_buttons(cls, buttons):
+        if len(buttons) != len(set(buttons)):
+            raise ValueError('Buttons must be unique; each is held for the entire frame batch')
+        return buttons
 
 
 class NextExperiment(Action):
