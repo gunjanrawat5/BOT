@@ -16,6 +16,8 @@ import time
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 from dotenv import load_dotenv
+from .run_stats import completed_runs
+from .profiles import get_profile, PROFILES
 
 
 class Dashboard:
@@ -26,6 +28,7 @@ class Dashboard:
         self.lock = threading.RLock()
         self.process = None
         self.current = None
+        self.stats_cache = {}
         self.logs = deque(maxlen=2000)
         self.secret = os.getenv('GEMINI_API_KEY', '')
 
@@ -40,6 +43,7 @@ class Dashboard:
                     'status': report.get('status', 'unverified'),
                     'severity': report.get('suspected_severity', 'unknown'),
                     'confidence': report.get('confidence', 'unknown'),
+                    'game_profile': report.get('game_profile', 'space_shooter'),
                     'created': datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
                     'repair': self.latest_repair(path.parent.name, summary_only=True)})
             except (OSError, ValueError, TypeError):
@@ -52,8 +56,18 @@ class Dashboard:
             raise FileNotFoundError('Artifact not found')
         return path
 
-    def game_repo(self):
-        return (self.root / os.getenv('GAME_REPO', '../SpaceShooter')).resolve()
+    def game_repo(self, profile=None):
+        selected = get_profile(profile or os.getenv('GAME_PROFILE', 'space_shooter'))
+        configured = os.getenv(selected.id.upper()+'_REPO')
+        if not configured and selected.id == os.getenv('GAME_PROFILE', 'space_shooter'):
+            configured = os.getenv('GAME_REPO')
+        return (self.root / (configured or selected.repo)).resolve()
+
+    def game_options(self):
+        active = os.getenv('GAME_PROFILE', 'space_shooter')
+        return [{'id': p.id, 'name': p.name,
+                 'game_url': os.getenv(p.id.upper()+'_URL') or (os.getenv('GAME_URL') if p.id==active else None) or p.url,
+                 'repair_configured': (self.game_repo(p.id)/'package.json').is_file()} for p in PROFILES.values()]
 
     def latest_repair(self, report_id, summary_only=False):
         candidates = []
@@ -79,7 +93,8 @@ class Dashboard:
             if not isinstance(report_id, str) or '/' in report_id or '\\' in report_id or report_id in {'', '.', '..'}:
                 raise ValueError('Select a saved bug report.')
             report = self.artifact(report_id+'/bug.json')
-            repo = self.game_repo()
+            profile = get_profile(json.loads(report.read_text()).get('game_profile', 'space_shooter'))
+            repo = self.game_repo(profile.id)
             if not (repo/'package.json').is_file():
                 raise ValueError('Set GAME_REPO to the game repository in .env and restart the dashboard.')
             run_id = uuid4().hex[:12]
@@ -108,14 +123,16 @@ class Dashboard:
                 raise ValueError('Select a repair candidate.')
             folder=self.reports/'repairs'/repair_id
             result_path=self.artifact('repairs/'+repair_id+'/result.json')
-            if Path(json.loads(result_path.read_text())['repo']).resolve()!=self.game_repo():
+            saved = json.loads(result_path.read_text())
+            if Path(saved['repo']).resolve()!=self.game_repo(saved.get('game_profile', 'space_shooter')):
                 raise ValueError('Repair belongs to a different game repository.')
             return apply_repair(folder)
 
     def status(self):
         with self.lock:
             return {'run': dict(self.current) if self.current else None, 'logs': list(self.logs),
-                    'settings': {'game_url': os.getenv('GAME_URL', 'http://localhost:5173'),
+                    'settings': {'game_profile': os.getenv('GAME_PROFILE', 'space_shooter'), 'games': self.game_options(),
+                                 'game_url': os.getenv('GAME_URL', get_profile(os.getenv('GAME_PROFILE', 'space_shooter')).url),
                                  'model': os.getenv('GEMINI_MODEL', ''),
                                  'max_steps': os.getenv('MAX_AGENT_STEPS', '20'),
                                  'seed': os.getenv('GAME_SEED', '42'),
@@ -128,13 +145,14 @@ class Dashboard:
                 raise ValueError('A run is already active. Stop it before starting another.')
             if not self.secret or not os.getenv('GEMINI_MODEL'):
                 raise ValueError('Set GEMINI_API_KEY and GEMINI_MODEL in .env, then restart the dashboard.')
+            profile = get_profile(data.get('game_profile', os.getenv('GAME_PROFILE', 'space_shooter')))
             steps, seed = data.get('max_steps', 20), data.get('seed', 42)
             watch = data.get('watch', True)
             if type(steps) is not int or not 1 <= steps <= 500 or type(seed) is not int or abs(seed) > 2**31 - 1:
                 raise ValueError('Use 1–500 actions and a 32-bit integer seed.')
             if type(watch) is not bool:
                 raise ValueError('Watch must be true or false.')
-            url = data.get('game_url', os.getenv('GAME_URL', 'http://localhost:5173'))
+            url = data.get('game_url', next(game['game_url'] for game in self.game_options() if game['id']==profile.id))
             if not isinstance(url, str):
                 raise ValueError('Game URL must be text.')
             parsed = urlparse(url)
@@ -145,14 +163,14 @@ class Dashboard:
             folder.mkdir(parents=True)
             command = [sys.executable, '-u', '-m', 'agent.main', '--reports', str(self.reports)]
             command.append('--watch' if watch else '--headless')
-            env = dict(os.environ, MAX_AGENT_STEPS=str(steps), GAME_SEED=str(seed), GAME_URL=url)
+            env = dict(os.environ, MAX_AGENT_STEPS=str(steps), GAME_SEED=str(seed), GAME_URL=url, SPACEQA_RUN_ID=run_id, GAME_PROFILE=profile.id)
             process = subprocess.Popen(command, cwd=self.root, env=env, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, text=True, start_new_session=True)
             self.process = process
             self.logs.clear()
             self.current = {'id': run_id, 'kind': 'exploration', 'status': 'running', 'started': time.time(),
                             'ended': None, 'max_steps': steps, 'seed': seed, 'watch': watch,
-                            'game_url': url, 'exit_code': None}
+                            'game_url': url, 'game_profile': profile.id, 'game_name': profile.name, 'exit_code': None}
             (folder / 'run.json').write_text(json.dumps(self.current, indent=2))
             threading.Thread(target=self._collect, args=(process, run_id, folder), daemon=True).start()
             return dict(self.current)
@@ -269,6 +287,8 @@ def make_handler(app):
                     return self.send(200, data, {'/': 'text/html; charset=utf-8', '/app.js': 'text/javascript', '/style.css': 'text/css'}[path])
                 if path == '/api/status':
                     return self.send(200, app.status())
+                if path == '/api/stats':
+                    return self.send(200, completed_runs(app.reports, app.stats_cache))
                 if path == '/api/reports':
                     return self.send(200, app.report_list())
                 if path.startswith('/api/reports/'):

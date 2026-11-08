@@ -15,6 +15,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .brain import Brain, DeadlineExceeded
+from .profiles import get_profile
 
 TEXT_SUFFIXES = {'.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.css', '.html', '.json', '.md'}
 SECRET_FILES = {'.npmrc', '.pypirc', 'credentials.json', 'service-account.json'}
@@ -215,6 +216,7 @@ def repair(repo, report_path, output, brain, time_budget=120):
     save()
     try:
         report = json.loads(report_path.read_text())
+        result['game_profile'] = report.get('game_profile', 'space_shooter')
         snapshot(repo, workspace, deadline=deadline)
         baseline_hashes = {str(p.relative_to(workspace)): digest(p) for p in workspace.rglob('*') if p.is_file()}
         package = json.loads((workspace/'package.json').read_text())
@@ -228,9 +230,19 @@ def repair(repo, report_path, output, brain, time_budget=120):
         if baseline['exit_code']:
             logging.info('Existing tests fail before repair; the candidate must also resolve those failures.')
         vite = repo/'node_modules'/'vite'/'bin'/'vite.js'
-        if package.get('scripts', {}).get('build') != 'vite build' or not vite.is_file():
-            raise ValueError('Install the game dependencies first; this version validates Vite builds')
-        baseline_build = run_check(['node', str(vite), 'build'], workspace)
+        build_script = package.get('scripts', {}).get('build')
+        if build_script not in (None, 'vite build'):
+            raise ValueError('Unsupported build script; use Vite or a dependency-free Node game')
+        if build_script == 'vite build' and not vite.is_file():
+            raise ValueError('Install the game dependencies before repairing')
+        def project_check():
+            if build_script == 'vite build': return run_check(['node', str(vite), 'build'], workspace)
+            files = sorted([*workspace.glob('*.js'), *workspace.glob('*.mjs'), *workspace.glob('src/**/*.js'), *workspace.glob('src/**/*.mjs')])
+            checks = [run_check(['node', '--check', str(path.relative_to(workspace))], workspace) for path in files]
+            return {'command': ['node', '--check', '(project JavaScript files)'],
+                    'exit_code': next((check['exit_code'] for check in checks if check['exit_code']), 0),
+                    'output': '\n'.join(' '.join(check['command'])+'\n'+check['output'] for check in checks)}
+        baseline_build = project_check()
         result['checks'].append({'stage': 'baseline_build', **baseline_build})
         if baseline_build['exit_code']:
             logging.info('Baseline build fails; a candidate must restore a passing build.')
@@ -306,7 +318,7 @@ def repair(repo, report_path, output, brain, time_budget=120):
                     restore(workspace, changes); continue
                 write_changes(workspace, changes)
                 tests = run_check(['node', '--test'], workspace)
-                build = run_check(['node', str(vite), 'build'], workspace)
+                build = project_check()
                 result['checks'].extend([{'stage': 'tests_after_fix', **tests},
                                          {'stage': 'build_after_fix', **build}])
                 if tests['exit_code'] or build['exit_code']:
@@ -320,7 +332,7 @@ def repair(repo, report_path, output, brain, time_budget=120):
                 result['changes'] = [{'path': name, 'baseline_sha256': baseline_hashes.get(name),
                                       'after_sha256': digest(workspace/name)} for name in changes]
                 result.update(status='checks_passed', summary=decision.reasoning,
-                              validation='New regression fails before the fix; full tests and Vite build pass after it. Gameplay has not been independently replayed.')
+                              validation='New regression fails before the fix; full tests and project checks pass after it. Gameplay has not been independently replayed.')
                 save()
                 logging.info('Repair candidate ready: %s', output)
                 return result
@@ -382,7 +394,7 @@ def main():
     load_dotenv()
     parser=argparse.ArgumentParser(description='Investigate and repair one SpaceQA report')
     parser.add_argument('--report',type=Path,required=True)
-    parser.add_argument('--repo',type=Path,default=Path(os.getenv('GAME_REPO','../SpaceShooter')))
+    parser.add_argument('--repo',type=Path,help='Game repo; defaults to the report game profile')
     parser.add_argument('--output',type=Path)
     args=parser.parse_args()
     logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
@@ -391,7 +403,11 @@ def main():
     try:
         key,model=os.getenv('GEMINI_API_KEY'),os.getenv('GEMINI_MODEL')
         if not key or not model: raise ValueError('Configure GEMINI_API_KEY and GEMINI_MODEL')
-        brain=Brain(key,model,rpm=int(os.getenv('GEMINI_RPM','15')))
+        profile=get_profile(json.loads(args.report.read_text()).get('game_profile','space_shooter'))
+        if args.repo is None:
+            configured=os.getenv(profile.id.upper()+'_REPO') or (os.getenv('GAME_REPO') if profile.id==os.getenv('GAME_PROFILE','space_shooter') else None)
+            args.repo=Path(configured or profile.repo)
+        brain=Brain(key,model,rpm=int(os.getenv('GEMINI_RPM','15')),profile=profile)
         result=repair(args.repo,args.report,output,brain)
         logging.info('Repair %s: %s',result['status'],result['summary'])
         logging.info('Repair result: %s',output/'result.json')

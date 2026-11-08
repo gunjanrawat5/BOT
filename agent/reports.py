@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+from .profiles import execution_actions
 
 
 def write_report(root, *, seed, game_url, trace, violations, before, after, screenshot, verification):
@@ -31,17 +32,15 @@ def write_report(root, *, seed, game_url, trace, violations, before, after, scre
 
 
 def write_ai_report(root, *, seed, game_url, trace, before, after,
-                    before_screenshot, screenshot, assessment, model, video_pending=False):
+                    before_screenshot, screenshot, assessment, model, video_pending=False, game_profile='space_shooter'):
     """Save every model-flagged issue, including uncertain design assumptions."""
     bug_id = uuid4().hex[:8]
     folder = Path(root) / f'{datetime.now(timezone.utc):%Y%m%dT%H%M%S_%fZ}_{bug_id}'
     folder.mkdir(parents=True)
     finding = assessment.model_dump()
-    actions = [action for r in trace for action in (
-        [{'frames': 1, 'buttons': r['action']['buttons']}] * r['action']['frames']
-        if r.get('frame_by_frame') else [r['action']])]
+    actions = [action for record in trace for action in execution_actions(record)]
     report = {'bug_id': bug_id, 'title': assessment.title, 'status': 'suspected',
-              'detection_method': 'gemini_assessment', 'model': model,
+              'detection_method': 'gemini_assessment', 'model': model, 'game_profile': game_profile,
               'suspected_severity': assessment.severity, 'confidence': assessment.confidence,
               'seed': seed, 'game_url': game_url, 'assessment': finding,
               'expected_behavior': assessment.expected_behavior, 'actual_behavior': assessment.actual_behavior,
@@ -55,7 +54,7 @@ def write_ai_report(root, *, seed, game_url, trace, before, after,
     (folder / 'before.png').write_bytes(before_screenshot)
     (folder / 'evidence.png').write_bytes(screenshot)
     (folder / 'bug.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
-    (folder / 'replay_trace.json').write_text(json.dumps({'seed': seed, 'actions': actions}, indent=2), encoding='utf-8')
+    (folder / 'replay_trace.json').write_text(json.dumps({'seed': seed, 'game_profile': game_profile, 'actions': actions}, indent=2), encoding='utf-8')
     evidence = '\n'.join(f'- {item}' for item in assessment.evidence)
     (folder / 'bug.md').write_text(
         f'# {assessment.title}\n\nStatus: **suspected — AI finding, not independently verified**\n\n'

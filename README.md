@@ -20,6 +20,48 @@ game (default `http://localhost:5173`), `GEMINI_API_KEY`, and an available visio
 model in `GEMINI_MODEL`. `gemini-3.1-flash-lite` has passed a live screenshot/schema
 check in this project. Keep keys out of source control.
 
+## Game profiles
+
+Choose **Space Shooter** or **Ping Pong** in the dashboard's Game selector. It
+updates the suggested URL and sends the selected profile to the agent. Configure
+the default with `GAME_PROFILE=space_shooter` or `GAME_PROFILE=ping_pong`, and set
+`GAME_URL` / `GAME_REPO` for that default. Optional `SPACE_SHOOTER_REPO`,
+`PING_PONG_REPO`, `SPACE_SHOOTER_URL`, and `PING_PONG_URL` override each preset.
+
+| Game | Default URL | Logical buttons | Public state |
+| --- | --- | --- | --- |
+| Space Shooter | `http://localhost:5173` | `left`, `right`, `shoot` | Player health, score, enemies, projectiles |
+| Ping Pong | `http://localhost:5174` | `up`, `down`, `pause` | Player/CPU paddles and scores, ball, rally, serve countdown, winner |
+
+For CLI runs, use `uv run spaceqa --game space_shooter` or
+`uv run spaceqa --game ping_pong`. An explicit selection uses that game's default
+URL (or `SPACE_SHOOTER_URL` / `PING_PONG_URL` override), avoiding a stale `GAME_URL`.
+Without `--game`, the CLI uses `GAME_PROFILE` and `GAME_URL` from the environment.
+
+Pong planning uses at most 12 frames per decision and receives an approximate
+interception point from public ball position/velocity, including wall rebounds.
+Gemini chooses the controls and uses observed paddle movement to avoid overshooting.
+This increases model calls per simulated second; use a larger action budget for rallies.
+The prediction assists play only and does not decide whether behavior is a bug.
+
+Pong's pause is a once-per-batch toggle. Animated playback and exported traces
+send it only on the first frame, preserving the game's batched semantics. Shooter
+controls remain unchanged. Pong's raw internal RNG, seed bookkeeping and event
+buffer are stripped before model input; width/height become the canonical canvas
+size. The separate ordered event API remains the source of action timelines.
+
+Pong planning and review use rally, intercept, serve, scoring and pause concepts,
+without fictional shooter health/enemies. Stats record the player's score, keep
+CPU points in observation history, and can be filtered by game. New reports keep
+their game profile so fixing an old shooter report still targets the shooter repo,
+even when Pong is selected. Repair supports Vite games and dependency-free Node
+games using `node --test`; games without a build script get JavaScript syntax
+checks instead. Run the integration check for the configured default with:
+
+```sh
+uv run spaceqa --control-check --headless
+```
+
 ## Local dashboard
 
 ```sh
@@ -39,6 +81,8 @@ From the dashboard you can:
 - Stop the active run, including its browser process group.
 - Browse existing reports, view paired screenshots, and open Markdown, JSON, or
   replay traces. Reports refresh automatically as new findings arrive.
+- Toggle **Findings / Stats** to view completed QA sessions, elapsed time, action
+  count, final game score, best observed score and links to saved findings.
 
 Only one dashboard-launched run is allowed at a time. Start runs here instead of
 launching a second agent from another terminal. Run metadata and redacted output
@@ -47,6 +91,25 @@ the latest 2,000 lines from the current dashboard process. Reports persist acros
 dashboard restarts. The dashboard remains local to this computer and exposes no
 API key or editable shell commands to the browser. Press Ctrl+C in its terminal
 to stop the dashboard and its active run.
+
+### Completed-run stats
+
+The Stats table includes successfully completed QA sessions (including sessions
+that stop early after finding a bug). Running, stopped and failed sessions and
+repair jobs are excluded. Each row represents a whole QA session, which may
+include multiple game resets. **Final score** is the score at the last observed
+state; **Best score** is the highest observed score across games in that session.
+Elapsed time includes planning, gameplay, review and recording finalization.
+
+New dashboard runs persist `summary.json` beside their `run.json` and activity
+log. New CLI runs persist summaries under `reports/run-stats/`. Scores are saved
+from actual game state, rather than inferred from terminal output. These summaries
+remain available after restarting the dashboard. The endpoint is `GET /api/stats`.
+
+For older completed dashboard runs, stats recover duration from saved start/end
+times and use activity/session logs and reports for observed scores/action counts.
+Missing values display **—**, never a fabricated zero. Prior CLI sessions without
+a completion record cannot reliably be classified as completed and are not listed.
 
 ## Repair agent
 
@@ -86,8 +149,9 @@ file was modified. Existing unrelated changes remain untouched. The agent does
 not commit, merge, deploy or automatically mark the original report resolved.
 After applying, run the QA agent again to check the gameplay.
 
-The current repair adapter supports Node games with `"test": "node --test"` and
-`"build": "vite build"`, using the game's installed Vite executable. Automated
+The current repair adapter supports Node games with `"test": "node --test"`.
+For `"build": "vite build"` it uses the game's installed Vite executable; games
+without a build script get `node --check` on their JavaScript source instead. Automated
 browser replay of a repair candidate is not implemented; passing tests/builds
 are reported as **checks passed**, not a confirmed gameplay fix.
 

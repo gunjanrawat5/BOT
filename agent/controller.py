@@ -1,10 +1,12 @@
 """The only boundary between the agent and the game."""
 import logging
-from .models import Action, GameState, EventBatch
+from .models import EventBatch
+from .profiles import get_profile
 
 
 class GameController:
-    def __init__(self, page, *, watch=False):
+    def __init__(self, page, *, watch=False, profile='space_shooter'):
+        self.profile = get_profile(profile)
         self.page = page
         self.watch = watch
         self.event_cursor = 0
@@ -19,7 +21,7 @@ class GameController:
     def get_state(self) -> dict:
         raw = self.page.evaluate("() => window.gameTestAPI.getState()")
         # Return only declared public fields, even if the game exposes extra internals.
-        return GameState.model_validate(raw).model_dump()
+        return self.profile.normalize(raw)
 
     def reset(self, seed: int) -> dict:
         self.page.evaluate("seed => window.gameTestAPI.reset(seed)", seed)
@@ -29,7 +31,7 @@ class GameController:
         return self.get_state()
 
     def step(self, frames: int, buttons: list[str]) -> dict:
-        action = Action(frames=frames, buttons=buttons)
+        action = self.profile.action_model(frames=frames, buttons=buttons)
         baseline = self.read_events()
         if self.watch:
             # Advance only via the declared API; yield between frames so the
@@ -37,10 +39,11 @@ class GameController:
             # same controller and therefore the same single-frame calls.
             self.page.evaluate("""async arg => {
                 for (let frame = 0; frame < arg.frames; frame++) {
-                    window.gameTestAPI.stepFrames(1, arg.buttons);
+                    const buttons = frame === 0 ? arg.buttons : arg.buttons.filter(button => !arg.pulseButtons.includes(button));
+                    window.gameTestAPI.stepFrames(1, buttons);
                     await new Promise(resolve => setTimeout(resolve, 1000 / 60));
                 }
-            }""", action.model_dump())
+            }""", {**action.model_dump(), "pulseButtons": list(self.profile.pulse_buttons)})
         else:
             self.page.evaluate("arg => window.gameTestAPI.stepFrames(arg.frames, arg.buttons)", action.model_dump())
         self.last_events = self.read_events()

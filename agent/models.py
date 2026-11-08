@@ -81,3 +81,50 @@ class EventBatch(BaseModel):
     events: list[GameEvent] = Field(max_length=4096)
     nextSequence: int = Field(ge=0)
     truncated: bool
+
+
+class Paddle(PublicModel):
+    id: str
+    x: float
+    y: float
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+
+
+class Ball(PublicModel):
+    x: float
+    y: float
+    radius: float = Field(gt=0)
+    vx: float
+    vy: float
+
+
+class PongScore(PublicModel):
+    player: int
+    cpu: int
+
+
+class PongState(PublicModel):
+    tick: int = Field(ge=0)
+    status: str
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+    player: Paddle
+    cpu: Paddle
+    ball: Ball
+    score: PongScore
+    winningScore: int = Field(gt=0)
+    winner: str | None = None
+    rally: int = Field(ge=0)
+    serveFrames: int = Field(ge=0)
+
+
+class PongAction(Action):
+    buttons: list[Literal['up', 'down', 'pause']] = Field(default_factory=list, max_length=3)
+
+
+class NextPongAction(PongAction):
+    frames: int = Field(ge=1, le=12, description='Short control window; use 1–3 frames near the target or contact')
+    hypothesis: str = Field(min_length=1, max_length=1000)
+    expected_behavior: str = Field(min_length=1, max_length=1000)
+    category: Literal['movement', 'boundary', 'collision', 'scoring', 'rally', 'pause', 'exploration']

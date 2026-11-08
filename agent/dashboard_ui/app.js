@@ -1,5 +1,7 @@
 const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="spaceqa-token"]').content;
+let gameOptions = [], selectedReportProfile = 'space_shooter', geminiConfigured = false;
+let libraryView = 'findings', latestStats = null, statsPolling = false, statsSignature = '';
 let activeRun = false, repairReady = false, currentRun = null, launching = false, pendingRepairId = null;
 let initialized = false, reports = [], selected = null, reportSignature = '', logSignature = '', polling = false;
 const el = (tag, cls, value) => { const node = document.createElement(tag); if (cls) node.className = cls; if (value !== undefined) node.textContent = value; return node; };
@@ -19,15 +21,22 @@ function syncActivityMotion() {
 function duration(seconds) { const s = Math.max(0,Math.floor(seconds)); return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; }
 function showStatus(data) {
   const {run, settings, logs} = data;
+  gameOptions=settings.games||[];geminiConfigured=Boolean(settings.configured);
   currentRun = run;
   syncActivityMotion();
   if (!initialized) {
+    if(gameOptions.length){
+      $('game-profile').replaceChildren(...gameOptions.map(game=>{const option=el('option','',game.name);option.value=game.id;return option;}));
+      $('stats-game').replaceChildren(el('option','','All games'),...gameOptions.map(game=>{const option=el('option','',game.name);option.value=game.id;return option;}));
+      $('stats-game').firstElementChild.value='all';
+    }
+    $('game-profile').value=settings.game_profile||'space_shooter';
     $('game-url').value = settings.game_url; $('max-steps').value = settings.max_steps; $('seed').value = settings.seed;
     initialized = true;
   }
   $('metric-model').textContent = settings.model || 'Not configured';
   const active = run && ['running','stopping'].includes(run.status);
-  activeRun = Boolean(active); repairReady = Boolean(settings.configured && settings.repair_configured);
+  activeRun = Boolean(active); repairReady = Boolean(settings.configured && (gameOptions.find(game=>game.id===selectedReportProfile)?.repair_configured ?? settings.repair_configured));
   if ($('fix-bug')) $('fix-bug').disabled = activeRun || !repairReady;
   if ($('apply-fix')) $('apply-fix').disabled = activeRun;
   const stepLines = logs.filter(line => /^INFO Step \d+,/.test(line));
@@ -43,7 +52,7 @@ function showStatus(data) {
   $('run-badge').className = 'badge'+(active ? ' running' : run?.status === 'failed' ? ' failed' : '');
   $('start').disabled = Boolean(active || !settings.configured);
   $('stop').hidden = !active; $('stop').disabled = run?.status === 'stopping';
-  for (const id of ['game-url','max-steps','seed','watch']) $(id).disabled = Boolean(active);
+  for (const id of ['game-profile','game-url','max-steps','seed','watch']) $(id).disabled = Boolean(active);
   $('run-info').textContent = run ? `${run.kind==='repair'?'REPAIR':'RUN'} ${run.id.toUpperCase()}${run.seed!==null?' · SEED '+run.seed:''}` : 'No active mission';
   $('elapsed').textContent = run ? duration((run.ended || Date.now()/1000)-run.started) : '—';
   $('activity-footer').textContent = active ? 'Agent connected · streaming activity' : run ? `Run ${run.status}${run.exit_code !== null ? ' · exit '+run.exit_code : ''}` : 'Ready when you are';
@@ -62,7 +71,7 @@ function showStatus(data) {
 function showReports(list) {
   reports = list;
   $('metric-reports').textContent = String(list.length).padStart(2,'0');
-  $('report-count').textContent = `${list.length} report${list.length===1?'':'s'}`;
+  if(libraryView==='findings')$('report-count').textContent = `${list.length} report${list.length===1?'':'s'}`;
   const signature = JSON.stringify(list);
   if (signature === reportSignature) return;
   const shouldReload = Boolean(selected && reportSignature && list.some(item=>item.id===selected));
@@ -76,6 +85,63 @@ function showReports(list) {
   $('report-list').replaceChildren(...(nodes.length?nodes:[el('p','list-empty','No findings yet. When Gemini flags unexpected behavior, the evidence will appear here.')]));
   if (shouldReload) loadReport(selected);
 }
+const statNumber = value => typeof value==='number' && Number.isFinite(value) ? value.toLocaleString() : '—';
+function showStats(data) {
+  latestStats=data;
+  const filter=$('stats-game').value;
+  const rows=(data.runs||[]).filter(run=>filter==='all'||run.game_profile===filter);
+  const knownScores=rows.map(run=>run.best_score).filter(value=>typeof value==='number');
+  const totals={completed:rows.length,duration_seconds:rows.reduce((sum,run)=>sum+(run.gameplay_seconds||0),0),best_score:knownScores.length?Math.max(...knownScores):null};
+  $('stats-completed').textContent=statNumber(totals.completed);
+  $('stats-total-time').textContent=typeof totals.duration_seconds==='number'?duration(totals.duration_seconds):'—';
+  $('stats-best-score').textContent=statNumber(totals.best_score);
+  if(libraryView==='stats')$('report-count').textContent=`${rows.length} run${rows.length===1?'':'s'}`;
+  if(JSON.stringify(rows)===statsSignature)return;
+  statsSignature=JSON.stringify(rows);
+  const nodes=rows.map(run=>{
+    const tr=el('tr');
+    const id=el('td','stats-run-id',run.id.slice(0,12));id.title=run.id;
+    const ended=typeof run.ended==='number'?new Date(run.ended*1000).toLocaleString():'—';
+    const actions=run.actions===null?'—':`${statNumber(run.actions)}${run.max_steps!==null?' / '+statNumber(run.max_steps):''}`;
+    const outcome=el('td');
+    if(run.report_id){const link=el('button','stats-finding-link','View finding ↗');link.type='button';link.addEventListener('click',()=>{activateLibrary('findings');loadReport(run.report_id);});outcome.append(link);}
+    else outcome.append(el('span','stats-outcome',run.outcome==='no_findings'?'No findings':run.outcome==='finding_saved'?'Finding saved':'Not recorded'));
+    tr.append(id,el('td','',gameOptions.find(game=>game.id===run.game_profile)?.name||'Space Shooter'),el('td','',ended),el('td','stats-numeric',typeof run.gameplay_seconds==='number'?duration(run.gameplay_seconds):'—'),el('td','stats-numeric',actions),el('td','stats-numeric',statNumber(run.final_score)),el('td','stats-numeric',statNumber(run.best_score)),outcome);
+    return tr;
+  });
+  if(!nodes.length){const tr=el('tr'),td=el('td','stats-empty','No completed runs yet. Finished QA runs will appear here.');td.colSpan=8;tr.append(td);nodes.push(tr);}
+  $('stats-body').replaceChildren(...nodes);
+  $('stats-note').hidden=!rows.some(run=>run.final_score===null||run.best_score===null||run.actions===null||typeof run.gameplay_seconds!=='number');
+}
+async function refreshStats() {
+  if(statsPolling)return;statsPolling=true;
+  try{const data=await api('/api/stats');$('stats-error').textContent='';showStats(data);}
+  catch(error){$('stats-error').textContent='Run stats could not load. Restart the dashboard with uv run spaceqa-dashboard and refresh.';}
+  finally{statsPolling=false;}
+}
+function activateLibrary(view) {
+  libraryView=view;
+  for(const name of ['findings','stats']){
+    const active=name===view;
+    $(name+'-tab').setAttribute('aria-selected',String(active));$(name+'-tab').tabIndex=active?0:-1;
+    $(name+'-view').hidden=!active;
+  }
+  $('library-heading').textContent=view==='stats'?'Run stats':'Findings library';
+  if(view==='stats'){
+    document.querySelectorAll('#findings-view video').forEach(video=>video.pause());
+    $('report-count').textContent=latestStats?`${latestStats.runs.length} run${latestStats.runs.length===1?'':'s'}`:'—';
+    if(latestStats)showStats(latestStats);
+    refreshStats();
+  }else $('report-count').textContent=`${reports.length} report${reports.length===1?'':'s'}`;
+}
+for(const name of ['findings','stats']){
+  $(name+'-tab').addEventListener('click',()=>activateLibrary(name));
+  $(name+'-tab').addEventListener('keydown',event=>{
+    if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){
+      event.preventDefault();const next=event.key==='Home'?'findings':event.key==='End'?'stats':name==='stats'?'findings':'stats';activateLibrary(next);$(next+'-tab').focus();
+    }
+  });
+}
 function section(target,label,value) { if(!value)return; target.append(el('h4','',label),el('p','detail-copy',value)); }
 async function loadReport(id) {
   selected=id;
@@ -84,9 +150,11 @@ async function loadReport(id) {
   try {
     const report=await api('/api/reports/'+encodeURIComponent(id));
     if (selected!==id)return;
+    selectedReportProfile=report.game_profile||'space_shooter';
+    repairReady=Boolean(geminiConfigured&&(gameOptions.find(game=>game.id===selectedReportProfile)?.repair_configured??false));
     const assessment=report.assessment||{};
     target.replaceChildren(el('span','detail-status',report.status==='suspected'?'AI SUSPECTED · NOT INDEPENDENTLY VERIFIED':report.status||'unverified'),el('h3','',report.title));
-    target.append(el('div','detail-meta',`${report.suspected_severity || 'unknown'} severity · ${report.confidence||'unknown'} confidence · seed ${report.seed}`));
+    target.append(el('div','detail-meta',`${gameOptions.find(game=>game.id===selectedReportProfile)?.name||'Space Shooter'} · ${report.suspected_severity || 'unknown'} severity · ${report.confidence||'unknown'} confidence · seed ${report.seed}`));
     const repairBox=el('section','repair-box');
     const repairHeading=el('div','repair-heading');repairHeading.append(el('h4','','Repair agent'));
     const fixButton=el('button','repair-button','Fix bug ↗');fixButton.id='fix-bug';fixButton.type='button';fixButton.disabled=activeRun||!repairReady;
@@ -199,15 +267,18 @@ async function refresh() {
   try {
     const [status,list]=await Promise.all([api('/api/status'),api('/api/reports')]);
     showStatus(status);showReports(list);
+    if(libraryView==='stats')await refreshStats();
   } catch(error){$('start').disabled=true;$('stop').disabled=true;}
   finally{polling=false;}
 }
 $('run-form').addEventListener('submit',async event=>{
   event.preventDefault();$('form-error').textContent='';$('start').disabled=true;launching=true;syncActivityMotion();
-  try {currentRun=await api('/api/runs/start',{game_url:$('game-url').value,max_steps:Number($('max-steps').value),seed:Number($('seed').value),watch:$('watch').checked}); await refresh();}
+  try {currentRun=await api('/api/runs/start',{game_profile:$('game-profile').value,game_url:$('game-url').value,max_steps:Number($('max-steps').value),seed:Number($('seed').value),watch:$('watch').checked}); await refresh();}
   catch(error){$('form-error').textContent=error.message;$('start').disabled=false;}
   finally{launching=false;syncActivityMotion();}
 });
 $('stop').addEventListener('click',async()=>{try{await api('/api/runs/stop',{});await refresh();}catch(error){$('form-error').textContent=error.message;}});
+$('game-profile').addEventListener('change',()=>{const game=gameOptions.find(game=>game.id===$('game-profile').value);if(game)$('game-url').value=game.game_url;});
+$('stats-game').addEventListener('change',()=>{if(latestStats)showStats(latestStats);});
 $('refresh').addEventListener('click',refresh);
 refresh();setInterval(refresh,1000);

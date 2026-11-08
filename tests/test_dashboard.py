@@ -139,3 +139,32 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(response.getheader('Accept-Ranges'),'bytes')
             self.assertEqual(response.read(),expected)
             connection.close()
+
+    def test_completed_run_stats_endpoint(self):
+        folder=self.root/'reports'/'dashboard-runs'/'completed';folder.mkdir(parents=True)
+        (folder/'run.json').write_text(json.dumps({'id':'completed','status':'completed','started':10,'ended':35}))
+        (folder/'summary.json').write_text(json.dumps({'status':'completed','actions':4,'final_score':0,'best_score':100}))
+        code,body=self.request('GET','/api/stats')
+        self.assertEqual(code,200)
+        stats=json.loads(body)
+        self.assertEqual(stats['totals']['completed'],1)
+        self.assertEqual(stats['runs'][0]['duration_seconds'],25)
+        self.assertEqual(stats['runs'][0]['final_score'],0)
+
+    def test_profiles_route_old_and_pong_reports_to_their_own_repos(self):
+        shooter=self.root/'shooter';pong=self.root/'pong'
+        for repo in (shooter,pong):repo.mkdir();(repo/'package.json').write_text('{}')
+        report=self.root/'reports'/'pong-finding';report.mkdir();(report/'bug.json').write_text('{"game_profile":"ping_pong"}')
+        real_popen=subprocess.Popen
+        def dummy(command,**kwargs):return real_popen([sys.executable,'-u','-c','import time;time.sleep(30)'],**kwargs)
+        env={'GAME_PROFILE':'ping_pong','GAME_REPO':str(pong),'SPACE_SHOOTER_REPO':str(shooter),'PING_PONG_REPO':str(pong)}
+        with patch.dict(os.environ,env),patch('agent.dashboard.subprocess.Popen',side_effect=dummy) as popen:
+            self.assertEqual(self.app.game_repo(),pong.resolve())
+            for report_id,expected in [('sample',shooter),('pong-finding',pong)]:
+                code,_=self.request('POST','/api/repairs/start',{'report_id':report_id})
+                self.assertEqual(code,201)
+                args=popen.call_args.args[0]
+                self.assertEqual(args[args.index('--repo')+1],str(expected.resolve()))
+                self.app.stop();self.app.process.wait(timeout=5)
+                deadline=time.monotonic()+3
+                while self.app.current['status']=='stopping' and time.monotonic()<deadline:time.sleep(.01)

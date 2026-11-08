@@ -49,6 +49,25 @@ any events emitted inside one large `stepFrames` call.
   RNG consumption, or event changes based on renderer/watch/headless mode.
 - Same seed + actions yields the same states AND event sequence.
 
+## Game profiles
+
+The envelope/cursor contract is shared by Space Shooter and Ping Pong. Events and
+public state fields are game-specific. Space Shooter inputs remain `left`, `right`,
+`shoot`. Ping Pong inputs are `up`, `down`, `pause`; pause toggles once per batch,
+on its first simulation frame, and is removed from later single-frame calls in
+animated mode. An empty button list waits. Both use 1–180 frames.
+
+Pong state includes player/CPU paddles, a ball, player/CPU point totals, winning
+score, rally count, serve countdown, and an optional winner. It has no health,
+enemy or shooting fields. The controller retains only these public fields and
+normalizes width/height to canvas size; it discards RNG and the internal event
+buffer. Pong event types include `game_reset`, `game_started`, `ball_served`,
+`wall_hit`, `paddle_hit`, `score_changed`, `pause_changed`, and `game_over`.
+`score_changed` carries `scorer` (player/cpu), before, after and delta. Unlike
+Shooter's reward events it has no enemy ID/cause sequence. Data fields must be
+interpreted in the active game's context. Reports record the profile for replay
+and repair routing. The table below describes Space Shooter event payloads.
+
 ## Events
 
 All records require `sequence`, `tick`, `type`, and a public `data` object.

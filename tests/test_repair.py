@@ -115,3 +115,12 @@ class RepairTests(unittest.TestCase):
         self.assertFalse((self.output/'workspace'/'tests'/'add.test.js').exists())
         self.assertIn('a-b',(self.output/'workspace'/'src'/'math.js').read_text())
         self.assertFalse((self.output/'fix.patch').exists())
+
+    def test_dependency_free_game_uses_syntax_checks_without_vite(self):
+        import shutil
+        shutil.rmtree(self.repo/'node_modules')
+        (self.repo/'package.json').write_text(json.dumps({'type':'module','scripts':{'test':'node --test'}}))
+        self.brain._request.return_value=self.proposal()
+        result=repair(self.repo,self.report,self.output,self.brain)
+        self.assertEqual(result['status'],'checks_passed')
+        self.assertTrue(any(check['command'][:2]==['node','--check'] for check in result['checks']))
